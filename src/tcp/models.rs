@@ -10,6 +10,53 @@ const OUR_MARKER: u8 = 'O' as u8;
 const SOURCE_MARKER: u8 = 'S' as u8;
 
 #[derive(Debug, Clone)]
+pub enum BidAskDateTimeNew {
+    Source(DateTimeAsMicroseconds),
+    Our(DateTimeAsMicroseconds),
+}
+
+impl BidAskDateTimeNew {
+    #[cfg(test)]
+    pub fn unwrap_as_our_date(&self) -> &DateTimeAsMicroseconds {
+        match self {
+            BidAskDateTimeNew::Our(data) => data,
+            _ => panic!("BidAsk::unwrap_as_our_date: not Our Date"),
+        }
+    }
+    #[cfg(test)]
+    pub fn unwrap_as_source_date(&self) -> &DateTimeAsMicroseconds {
+        match self {
+            BidAskDateTimeNew::Source(data) => data,
+            _ => panic!("BidAsk::unwrap_as_source_date: not Source Date"),
+        }
+    }
+
+    pub fn serialize(&self, dest: &mut Vec<u8>) {
+        match &self {
+            BidAskDateTimeNew::Source(date_time) => {
+                dest.push(SOURCE_MARKER as u8);
+                date_time_to_string(dest, date_time);
+            }
+            BidAskDateTimeNew::Our(date_time) => {
+                dest.push(OUR_MARKER as u8);
+                date_time_to_string(dest, date_time);
+            }
+        };
+    }
+
+    pub fn parse(src: &str) -> Self {
+        let source_time = src.as_bytes()[0] != OUR_MARKER;
+        let date_time = parse_date_time(&src[1..]);
+
+        if source_time {
+            BidAskDateTimeNew::Source(date_time)
+        } else {
+            BidAskDateTimeNew::Our(date_time)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum BidAskDateTime {
     Source(DateTimeAsMicroseconds),
     Our(DateTimeAsMicroseconds),
@@ -179,6 +226,58 @@ impl my_tcp_sockets::tcp_connection::TcpContract for BidAskContract {
 }
 
 #[derive(Debug, Clone)]
+pub enum BidAskContractNew {
+    Ping,
+    Pong,
+    BidAsk(BidAskNew),
+}
+
+impl BidAskContractNew {
+    pub fn is_ping(&self) -> bool {
+        match self {
+            BidAskContractNew::Ping => true,
+            _ => false,
+        }
+    }
+
+    pub fn parse(src: &str) -> Self {
+        if src == "PING" {
+            return Self::Ping;
+        }
+        if src == "PONG" {
+            return Self::Pong;
+        }
+
+        Self::BidAsk(BidAskNew::parse(src).unwrap())
+    }
+
+    pub fn serialize(&self, dest: &mut Vec<u8>) {
+        match self {
+            BidAskContractNew::Ping => dest.extend_from_slice(b"PING"),
+            BidAskContractNew::Pong => dest.extend_from_slice(b"PONG"),
+            BidAskContractNew::BidAsk(bid_ask) => bid_ask.serialize(dest),
+        }
+    }
+
+    pub fn is_bid_ask(&self) -> bool {
+        match self {
+            BidAskContractNew::Ping => false,
+            BidAskContractNew::Pong => false,
+            BidAskContractNew::BidAsk(_) => true,
+        }
+    }
+}
+
+impl my_tcp_sockets::tcp_connection::TcpContract for BidAskContractNew {
+    fn is_pong(&self) -> bool {
+        match self {
+            BidAskContractNew::Pong => true,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct BidAsk {
     pub date_time: BidAskDateTime,
     pub id: String,
@@ -234,9 +333,69 @@ impl BidAsk {
         dest.extend_from_slice(self.bid.to_string().as_bytes());
         dest.push(' ' as u8);
         dest.extend_from_slice(self.ask.to_string().as_bytes());
-        // dest.push(' ' as u8);
+    }
+}
 
-        // dest.extend_from_slice(self.source.as_bytes());
+#[derive(Debug, Clone)]
+pub struct BidAskNew {
+    pub date_time: BidAskDateTime,
+    pub id: String,
+    pub bid: f64,
+    pub ask: f64,
+    pub source: String,
+}
+
+impl BidAskNew {
+    pub fn parse(src: &str) -> Option<Self> {
+        let mut date_time = None;
+        let mut id = None;
+        let mut bid = None;
+        let mut ask = None;
+        let mut source = None;
+        let mut no = 0;
+
+        for line in src.split(' ') {
+            match no {
+                0 => {
+                    date_time = BidAskDateTime::parse(line).into();
+                }
+                1 => id = Some(line.to_string()),
+                2 => bid = Some(line.parse::<f64>().unwrap()),
+                3 => ask = Some(line.parse::<f64>().unwrap()),
+                4 => source = line.to_string().into(),
+                _ => {}
+            }
+            no += 1;
+        }
+
+        let date_time = date_time?;
+        let id = id?;
+        let bid = bid?;
+        let ask = ask?;
+        let source = source?;
+
+        Self {
+            date_time,
+            id,
+            bid,
+            ask,
+            source,
+        }
+        .into()
+    }
+
+    pub fn serialize(&self, dest: &mut Vec<u8>) {
+        self.date_time.serialize(dest);
+
+        dest.push(' ' as u8);
+        dest.extend_from_slice(self.id.as_bytes());
+        dest.push(' ' as u8);
+
+        dest.extend_from_slice(self.bid.to_string().as_bytes());
+        dest.push(' ' as u8);
+        dest.extend_from_slice(self.ask.to_string().as_bytes());
+        dest.push(' ' as u8);
+        dest.extend_from_slice(self.source.as_bytes());
     }
 }
 
@@ -287,6 +446,58 @@ impl TcpSocketSerializer<BidAskContract> for SourceFeedSerializer {
         let result = std::str::from_utf8(&result[..result.len() - CLCR.len()]).unwrap();
 
         Ok(BidAskContract::parse(result))
+    }
+
+    // fn apply_packet(&mut self, _contract: &BidAskContract) -> bool {
+    //     false
+    // }
+}
+
+
+pub struct SourceFeedSerializerNew {
+    read_buffer: ReadBuffer,
+}
+
+impl SourceFeedSerializerNew {
+    pub fn new() -> Self {
+        Self {
+            read_buffer: ReadBuffer::new(1024 * 24),
+        }
+    }
+}
+
+#[async_trait]
+impl TcpSocketSerializer<BidAskContractNew> for SourceFeedSerializerNew {
+    const PING_PACKET_IS_SINGLETONE: bool = false;
+
+    fn serialize(&self, contract: BidAskContractNew) -> Vec<u8> {
+        let mut result = Vec::with_capacity(MAX_PACKET_CAPACITY);
+        contract.serialize(&mut result);
+        result.extend_from_slice(CLCR);
+        result
+    }
+
+    // fn serialize_ref(&self, contract: &BidAskContract) -> Vec<u8> {
+    //     let mut result = Vec::with_capacity(MAX_PACKET_CAPACITY);
+    //     contract.serialize(&mut result);
+    //     result.extend_from_slice(CLCR);
+    //     result
+    // }
+
+    fn get_ping(&self) -> BidAskContractNew {
+        return BidAskContractNew::Ping;
+    }
+    async fn deserialize<TSocketReader: Send + Sync + 'static + SocketReader>(
+        &mut self,
+        socket_reader: &mut TSocketReader,
+    ) -> Result<BidAskContractNew, ReadingTcpContractFail> {
+        let result = socket_reader
+            .read_until_end_marker(&mut self.read_buffer, CLCR)
+            .await?;
+
+        let result = std::str::from_utf8(&result[..result.len() - CLCR.len()]).unwrap();
+
+        Ok(BidAskContractNew::parse(result))
     }
 
     // fn apply_packet(&mut self, _contract: &BidAskContract) -> bool {
