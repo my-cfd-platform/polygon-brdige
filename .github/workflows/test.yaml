@@ -35,9 +35,3 @@ jobs:
           echo $ver
           docker build -t ${IMAGE_NAME}:$ver .
           docker push ${IMAGE_NAME}:$ver
-Footer
-© 2023 GitHub, Inc.
-Footer navigation
-Terms
-Privacy
-Security
